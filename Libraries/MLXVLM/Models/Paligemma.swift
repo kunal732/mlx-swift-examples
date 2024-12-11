@@ -100,15 +100,6 @@ private enum Language {
             }
 
 
-            /*
-            let output = MLXFast.scaledDotProductAttention(
-                queries: queries, keys: keys, values: values, scale: scale, mask: mask
-            )
-            .transposed(0, 2, 1, 3)
-            .reshaped(B, L, -1)
-
-            return wo(output)
-            */
             
             if isGemma2 {
     queries *= scale
@@ -196,28 +187,6 @@ private enum Language {
     return wo(output.transposed(0, 2, 1, 3).reshaped(queries.dim(0), queries.dim(2), -1))
 }
 
-            /*if isGemma2 {
-                // gemma2 logic with softcapping
-                queries *= scale
-                //var scores = queries.matmul(keys.transposed(-2, -1))
-                var scores = queries.matmul(keys.transposed(0, 1, 3, 2))
-                if let capping = attnLogitSoftCapping {
-                    scores = tanh(scores / capping) * capping
-                }
-                if let mask {
-                    scores += mask
-                }
-                //let attention = scores.softmax(axis: -1)
-                let attention = MLX.softmax(scores, axis: -1)
-                let output = attention.matmul(values)
-                return wo(output.transposed(0, 2, 1, 3).reshaped(B, L, -1))
-            } else {
-                // gemma logic
-                let output = MLXFast.scaledDotProductAttention(
-                    queries: queries, keys: keys, values: values, scale: scale, mask: mask
-                )
-                return wo(output.transposed(0, 2, 1, 3).reshaped(B, L, -1))
-            }*/
         }
     }
 
@@ -290,26 +259,6 @@ private enum Language {
             }
         }
 
-        /*
-        public init(_ args: PaliGemmaConfiguration.TextConfiguration) {
-            self._attention.wrappedValue = Attention(args)
-            self.mlp = MLP(dimensions: args.hiddenSize, hiddenDimensions: args.intermediateSize)
-            self._inputLayerNorm.wrappedValue = RMSNorm(
-                dimensions: args.hiddenSize, eps: args.rmsNormEps)
-            self._postAttentionLayerNorm.wrappedValue = RMSNorm(
-                dimensions: args.hiddenSize, eps: args.rmsNormEps)
-        }
-
-        public func callAsFunction(
-            _ x: MLXArray, mask: MLXArray? = nil, cache: KVCache?
-        ) -> MLXArray {
-            var r = attention(inputLayerNorm(x), mask: mask, cache: cache)
-            let h = x + r
-            r = mlp(postAttentionLayerNorm(h))
-            let out = h + r
-            return out
-        }
-        */
     }
 
     fileprivate class GemmaModel: Module {
@@ -366,22 +315,6 @@ private enum Language {
         let config: PaliGemmaConfiguration.TextConfiguration
         let isGemma2: Bool
 
-        /*
-        public init(_ args: PaliGemmaConfiguration.TextConfiguration) {
-            self.model = GemmaModel(args)
-
-            self.kvHeads = (0 ..< args.hiddenLayers).map { _ in args.kvHeads }
-        }
-
-        public func callAsFunction(
-            _ inputs: MLXArray, cache: [KVCache]? = nil, inputEmbedding: MLXArray? = nil,
-            mask: MLXArray? = nil
-        ) -> LMOutput {
-            var out = model(inputs, cache: cache, inputEmbedding: inputEmbedding, mask: mask)
-            out = model.embedTokens.asLinear(out)
-            return LMOutput(logits: out)
-        }
-        */
 
         public init(_ args: PaliGemmaConfiguration.TextConfiguration) {
             self.config = args
@@ -931,8 +864,6 @@ public struct PaliGemmaConfiguration: Codable, Sendable {
     self.modelType = try container.decode(String.self, forKey: .modelType)
     self.ignoreIndex = (try? container.decode(Int.self, forKey: .ignoreIndex)) ?? -100
     self.imageTokenIndex = try container.decode(Int.self, forKey: .imageTokenIndex)
-    //self.hiddenSize = try container.decode(Int.self, forKey: .hiddenSize)
-    // Attempt to decode hiddenSize, fallback to textConfiguration.hiddenSize if missing
     self.hiddenSize = (try? container.decode(Int.self, forKey: .hiddenSize)) ?? textConfiguration.hiddenSize
     self.padTokenId = try container.decode(Int.self, forKey: .padTokenId)
 
