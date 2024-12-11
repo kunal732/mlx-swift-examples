@@ -109,7 +109,94 @@ private enum Language {
 
             return wo(output)
             */
+            
             if isGemma2 {
+    queries *= scale
+    let repeats = args.attentionHeads / args.kvHeads
+
+    // If we have more heads than kvHeads, we need to reshape to match the Python logic
+    // Python logic:
+    // queries: [B, heads, L, headDim] -> [B, kvHeads, repeats, L, headDim]
+    // keys:    [B, kvHeads, S, headDim] -> [B, kvHeads, 1, S, headDim]
+    // values:  [B, kvHeads, S, headDim] -> [B, kvHeads, 1, S, headDim]
+
+    let B = queries.dim(0)
+    // queries currently: [B, heads, L, headDim]
+    // keys, values:      [B, kvHeads, S, headDim]
+    let L = queries.dim(2)    // sequence length for queries
+    let headDim = queries.dim(3)
+    let S = keys.dim(2)       // sequence length for keys/values
+
+    var queriesGemma2 = queries
+    var keysGemma2 = keys
+    var valuesGemma2 = values
+
+    if repeats > 1 {
+        // Reshape queries
+        queriesGemma2 = queriesGemma2.reshaped(B, args.kvHeads, repeats, L, headDim)
+        // Insert singleton dimension for keys/values
+        // keys: [B, kvHeads, S, headDim] -> [B, kvHeads, 1, S, headDim]
+        keysGemma2 = keysGemma2.expandedDimensions(axis: 2)
+        valuesGemma2 = valuesGemma2.expandedDimensions(axis: 2)
+    }
+
+    // Now we compute scores:
+    // Python: scores = queries @ keys.swapaxes(-1, -2)
+    // We must fully specify axes for transpose in MLX.
+    // After expansion, keys: [B, kvHeads, 1, S, headDim]
+    // We want to transpose the last two axes to get: [B, kvHeads, 1, headDim, S]
+
+    let transposedKeys = keysGemma2.transposed(0, 1, 2, 4, 3)
+    // queriesGemma2: [B, kvHeads, repeats, L, headDim]
+    // transposedKeys:[B, kvHeads, 1, headDim, S]
+
+    // When we matmul queriesGemma2 and transposedKeys, we get scores:
+    // For matmul: The last dimension of queriesGemma2 (headDim) must match the second-to-last dim of transposedKeys (headDim).
+    // Resulting scores shape: [B, kvHeads, repeats, L, S]
+
+    var scores = queriesGemma2.matmul(transposedKeys)
+
+    // Apply softcapping if needed:
+    if let capping = attnLogitSoftCapping {
+        scores = tanh(scores / capping) * capping
+    }
+
+    // Apply mask if present
+    if let mask {
+        scores += mask
+    }
+
+    // Softmax over the last dimension (S)
+    let attention = MLX.softmax(scores, axis: -1)
+
+    // Now multiply attention by values:
+    // attention: [B, kvHeads, repeats, L, S]
+    // valuesGemma2: [B, kvHeads, 1, S, headDim]
+    // After matmul: output: [B, kvHeads, repeats, L, headDim]
+
+    let output = attention.matmul(valuesGemma2)
+
+    var finalOutput = output
+    if repeats > 1 {
+        // Reshape back to [B, heads, L, headDim]
+        finalOutput = finalOutput.reshaped(B, args.attentionHeads, L, headDim)
+    }
+
+    // Finally transpose and reshape to [B, L, D] before applying wo
+    // finalOutput: [B, heads, L, headDim] -> transposed(0, 2, 1, 3)
+    // -> [B, L, heads, headDim] -> reshaped(B, L, -1)
+    let finalOut = finalOutput.transposed(0, 2, 1, 3).reshaped(B, L, -1)
+
+    return wo(finalOut)
+} else {
+    // gemma logic remains as before
+    let output = MLXFast.scaledDotProductAttention(
+        queries: queries, keys: keys, values: values, scale: scale, mask: mask
+    )
+    return wo(output.transposed(0, 2, 1, 3).reshaped(queries.dim(0), queries.dim(2), -1))
+}
+
+            /*if isGemma2 {
                 // gemma2 logic with softcapping
                 queries *= scale
                 //var scores = queries.matmul(keys.transposed(-2, -1))
@@ -130,7 +217,7 @@ private enum Language {
                     queries: queries, keys: keys, values: values, scale: scale, mask: mask
                 )
                 return wo(output.transposed(0, 2, 1, 3).reshaped(B, L, -1))
-            }
+            }*/
         }
     }
 
