@@ -20,7 +20,7 @@ private enum Language {
         let weight: MLXArray
         let eps: Float
 
-        public init(dimensions: Int, eps: Float = 1e-5) {
+        public init(dimensions: Int, eps: Float = 1e-6) {
             self.weight = MLXArray.ones([dimensions]).asType(.float16)
             self.eps = eps
             super.init()
