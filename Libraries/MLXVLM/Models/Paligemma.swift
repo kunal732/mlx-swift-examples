@@ -843,7 +843,9 @@ public struct PaliGemmaConfiguration: Codable, Sendable {
     self.modelType = try container.decode(String.self, forKey: .modelType)
     self.ignoreIndex = (try? container.decode(Int.self, forKey: .ignoreIndex)) ?? -100
     self.imageTokenIndex = try container.decode(Int.self, forKey: .imageTokenIndex)
-    self.hiddenSize = try container.decode(Int.self, forKey: .hiddenSize)
+    //self.hiddenSize = try container.decode(Int.self, forKey: .hiddenSize)
+    // Attempt to decode hiddenSize, fallback to textConfiguration.hiddenSize if missing
+    self.hiddenSize = (try? container.decode(Int.self, forKey: .hiddenSize)) ?? textConfiguration.hiddenSize
     self.padTokenId = try container.decode(Int.self, forKey: .padTokenId)
 
     // Attempt to decode vocabularySize; fallback if missing
