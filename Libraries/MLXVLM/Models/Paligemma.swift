@@ -112,7 +112,8 @@ private enum Language {
             if isGemma2 {
                 // gemma2 logic with softcapping
                 queries *= scale
-                var scores = queries.matmul(keys.transposed(-2, -1))
+                //var scores = queries.matmul(keys.transposed(-2, -1))
+                var scores = queries.matmul(keys.transposed(0, 1, 3, 2))
                 if let capping = attnLogitSoftCapping {
                     scores = tanh(scores / capping) * capping
                 }
