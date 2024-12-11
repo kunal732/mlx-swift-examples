@@ -121,7 +121,7 @@ private enum Language {
                 }
                 //let attention = scores.softmax(axis: -1)
                 let attention = MLX.softmax(scores, axis: -1)
-                let output = attention.dot(values)
+                let output = attention.matmul(values)
                 return wo(output.transposed(0, 2, 1, 3).reshaped(B, L, -1))
             } else {
                 // gemma logic
