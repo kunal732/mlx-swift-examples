@@ -47,7 +47,7 @@ private enum Language {
 
         public init(_ args: PaliGemmaConfiguration.TextConfiguration) {
             self.args = args
-            self.isGemma2 = (args.modelType =="gemma2")
+            self.isGemma2 = (args.modelType == "gemma2")
 
             let dim = args.hiddenSize
             let heads = args.attentionHeads
@@ -112,7 +112,7 @@ private enum Language {
             if isGemma2 {
                 // gemma2 logic with softcapping
                 queries *= scale
-                var scores = queries.dot(keys.transposed(-2, -1))
+                var scores = queries.matmul(keys.transposed(-2, -1))
                 if let capping = attnLogitSoftCapping {
                     scores = tanh(scores / capping) * capping
                 }
@@ -191,7 +191,7 @@ private enum Language {
                 // r = mlp(pre_feedforward_layernorm(h))
                 let r = mlp(preFeedforwardLayerNorm!(h))
                 // out = h + post_feedforward_layernorm(r)
-                return h + postFeedforwardLayernorm!(r)
+                return h + postFeedforwardLayerNorm!(r)
             } else {
                 // gemma: h = x + attnOut
                 let h = x + attnOut
@@ -836,9 +836,8 @@ public struct PaliGemmaConfiguration: Codable, Sendable {
         case altVocabularySize = "_vocab_size"
     }
 
-    public init(from decoder: Decoder) throws {
+    public init(from decoder: Swift.Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-
         self.textConfiguration = try container.decode(TextConfiguration.self, forKey: .textConfiguration)
         self.visionConfiguration = try container.decode(VisionConfiguration.self, forKey: .visionConfiguration)
         self.modelType = try container.decode(String.self, forKey: .modelType)
