@@ -20,7 +20,7 @@ private enum Language {
         let weight: MLXArray
         let eps: Float
 
-        public init(dimensions: Int, eps: Float = 1e-5) {
+        public init(dimensions: Int, eps: Float = 1e-6) {
             self.weight = MLXArray.ones([dimensions]).asType(.float16)
             self.eps = eps
             super.init()
@@ -35,6 +35,8 @@ private enum Language {
 
         let args: PaliGemmaConfiguration.TextConfiguration
         let scale: Float
+        let attnLogitSoftCapping: Float?
+        let isGemma2: Bool
 
         @ModuleInfo(key: "q_proj") var wq: Linear
         @ModuleInfo(key: "k_proj") var wk: Linear
@@ -45,13 +47,25 @@ private enum Language {
 
         public init(_ args: PaliGemmaConfiguration.TextConfiguration) {
             self.args = args
+            self.isGemma2 = (args.modelType =="gemma2")
 
             let dim = args.hiddenSize
             let heads = args.attentionHeads
             let kvHeads = args.kvHeads
+            let headDim = isGemma2 ? args.headDim : (dim / heads)
 
-            let headDim = args.hiddenSize / heads
-            self.scale = pow(Float(headDim), -0.5)
+            //let headDim = args.hiddenSize / heads
+            //self.scale = pow(Float(headDim), -0.5)
+            
+            if isGemma2 {
+                // For gemma2, queries are scaled by 1/sqrt(queryPreAttnScalar)
+                let qScale = Float(args.queryPreAttnScalar ?? 1.0)
+                self.scale = 1.0 / sqrt(qScale)
+            } else {
+                self.scale = pow(Float(headDim), -0.5)
+            }
+
+            self.attnLogitSoftCapping = args.attnLogitSoftCapping
 
             self._wq.wrappedValue = Linear(dim, heads * headDim, bias: false)
             self._wk.wrappedValue = Linear(dim, kvHeads * headDim, bias: false)
@@ -85,6 +99,8 @@ private enum Language {
                 keys = rope(keys)
             }
 
+
+            /*
             let output = MLXFast.scaledDotProductAttention(
                 queries: queries, keys: keys, values: values, scale: scale, mask: mask
             )
@@ -92,6 +108,27 @@ private enum Language {
             .reshaped(B, L, -1)
 
             return wo(output)
+            */
+            if isGemma2 {
+                // gemma2 logic with softcapping
+                queries *= scale
+                var scores = queries.dot(keys.transposed(-2, -1))
+                if let capping = attnLogitSoftCapping {
+                    scores = tanh(scores / capping) * capping
+                }
+                if let mask {
+                    scores += mask
+                }
+                let attention = scores.softmax(axis: -1)
+                let output = attention.dot(values)
+                return wo(output.transposed(0, 2, 1, 3).reshaped(B, L, -1))
+            } else {
+                // gemma logic
+                let output = MLXFast.scaledDotProductAttention(
+                    queries: queries, keys: keys, values: values, scale: scale, mask: mask
+                )
+                return wo(output.transposed(0, 2, 1, 3).reshaped(B, L, -1))
+            }
         }
     }
 
@@ -120,6 +157,51 @@ private enum Language {
         @ModuleInfo(key: "input_layernorm") var inputLayerNorm: RMSNorm
         @ModuleInfo(key: "post_attention_layernorm") var postAttentionLayerNorm: RMSNorm
 
+        //For Gemma2
+        @ModuleInfo(key: "pre_feedforward_layernorm") var preFeedforwardLayerNorm: RMSNorm?
+        @ModuleInfo(key: "post_feedforward_layernorm") var postFeedforwardLayerNorm: RMSNorm?
+
+        let isGemma2: Bool
+        
+        public init(_ args: PaliGemmaConfiguration.TextConfiguration) {
+            self._attention.wrappedValue = Attention(args)
+            self.mlp = MLP(dimensions: args.hiddenSize, hiddenDimensions: args.intermediateSize)
+            self._inputLayerNorm.wrappedValue = RMSNorm(
+                dimensions: args.hiddenSize, eps: args.rmsNormEps)
+            self._postAttentionLayerNorm.wrappedValue = RMSNorm(
+                dimensions: args.hiddenSize, eps: args.rmsNormEps)
+            self.isGemma2 = (args.modelType == "gemma2")
+
+            if isGemma2 {
+                self._preFeedforwardLayerNorm.wrappedValue = RMSNorm(
+                    dimensions: args.hiddenSize, eps: args.rmsNormEps)
+                self._postFeedforwardLayerNorm.wrappedValue = RMSNorm(
+                    dimensions: args.hiddenSize, eps: args.rmsNormEps)
+            }
+        }
+
+        public func callAsFunction(
+            _ x: MLXArray, mask: MLXArray? = nil, cache: KVCache?
+        ) -> MLXArray {
+            let attnOut = attention(inputLayerNorm(x), mask: mask, cache: cache)
+            if isGemma2 {
+                // gemma2: Normalized residuals
+                // h = x + post_attention_layernorm(attnOut)
+                let h = x + postAttentionLayerNorm(attnOut)
+                // r = mlp(pre_feedforward_layernorm(h))
+                let r = mlp(preFeedforwardLayerNorm!(h))
+                // out = h + post_feedforward_layernorm(r)
+                return h + postFeedforwardLayernorm!(r)
+            } else {
+                // gemma: h = x + attnOut
+                let h = x + attnOut
+                // out = h + mlp(postAttentionLayerNorm(h))
+                let r = mlp(postAttentionLayerNorm(h))
+                return h + r
+            }
+        }
+
+        /*
         public init(_ args: PaliGemmaConfiguration.TextConfiguration) {
             self._attention.wrappedValue = Attention(args)
             self.mlp = MLP(dimensions: args.hiddenSize, hiddenDimensions: args.intermediateSize)
@@ -138,6 +220,7 @@ private enum Language {
             let out = h + r
             return out
         }
+        */
     }
 
     fileprivate class GemmaModel: Module {
@@ -190,7 +273,11 @@ private enum Language {
         @ModuleInfo var model: GemmaModel
 
         var kvHeads: [Int]
+        var headDim: MLX.IntOrPair
+        let config: PaliGemmaConfiguration.TextConfiguration
+        let isGemma2: Bool
 
+        /*
         public init(_ args: PaliGemmaConfiguration.TextConfiguration) {
             self.model = GemmaModel(args)
 
@@ -205,6 +292,31 @@ private enum Language {
             out = model.embedTokens.asLinear(out)
             return LMOutput(logits: out)
         }
+        */
+
+        public init(_ args: PaliGemmaConfiguration.TextConfiguration) {
+            self.config = args
+            self.model = GemmaModel(args)
+            self.isGemma2 = (args.modelType == "gemma2")
+
+            self.kvHeads = (0 ..< args.hiddenLayers).map { _ in args.kvHeads }
+            self.headDim = .init(isGemma2 ? args.headDim : (args.hiddenSize / args.attentionHeads))
+        }
+
+        public func callAsFunction(
+            _ inputs: MLXArray, cache: [KVCache]? = nil, inputEmbedding: MLXArray? = nil,
+            mask: MLXArray? = nil
+        ) -> LMOutput {
+            var out = model(inputs, cache: cache, inputEmbedding: inputEmbedding, mask: mask)
+            out = model.embedTokens.asLinear(out)
+
+            if isGemma2, let capping = config.finalLogitSoftCapping {
+                out = tanh(out / capping) * capping
+            }
+
+            return LMOutput(logits: out)
+        }
+        
 
         func sanitize(weights: [String: MLXArray]) -> [String: MLXArray] {
             weights.filter {
@@ -526,6 +638,7 @@ public class PaliGemma: Module, VLMModel, KVCacheDimensionProvider {
 
     public var vocabularySize: Int { config.vocabularySize }
     public var kvHeads: [Int] { languageModel.kvHeads }
+    public var headDim: MLX.IntOrPair { languageModel.headDim }
 
     public func loraLinearLayers() -> MLXLMCommon.LoRALinearLayers {
         languageModel.model.layers.map { ($0.attention, ["q_proj", "v_proj"]) }
@@ -642,6 +755,20 @@ public struct PaliGemmaConfiguration: Codable, Sendable {
         private let _ropeTraditional: Bool?
         public var ropeTraditional: Bool { _ropeTraditional ?? false }
 
+        // New fields for gemma2
+        private let _headDim: Int?
+        public var headDim: Int { _headDim ?? 256 }
+
+        private let _attnLogitSoftCapping: Float?
+        public var attnLogitSoftCapping: Float? { _attnLogitSoftCapping }
+
+        private let _finalLogitSoftCapping: Float?
+        public var finalLogitSoftCapping: Float? { _finalLogitSoftCapping }
+
+        private let _queryPreAttnScalar: Float?
+        public var queryPreAttnScalar: Float? { _queryPreAttnScalar }
+
+
         enum CodingKeys: String, CodingKey {
             case modelType = "model_type"
             case hiddenSize = "hidden_size"
@@ -653,6 +780,10 @@ public struct PaliGemmaConfiguration: Codable, Sendable {
             case _rmsNormEps = "rms_norm_eps"
             case _ropeTheta = "rope_theta"
             case _ropeTraditional = "rope_traditional"
+            case _headDim = "head_dim"
+            case _attnLogitSoftCapping = "attn_logit_softcapping"
+            case _finalLogitSoftCapping = "final_logit_softcapping"
+            case _queryPreAttnScalar = "query_pre_attn_scalar"
         }
     }
 
@@ -702,6 +833,29 @@ public struct PaliGemmaConfiguration: Codable, Sendable {
         case imageTokenIndex = "image_token_index"
         case hiddenSize = "hidden_size"
         case padTokenId = "pad_token_id"
+        case altVocabularySize = "_vocab_size"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+
+        self.textConfiguration = try container.decode(TextConfiguration.self, forKey: .textConfiguration)
+        self.visionConfiguration = try container.decode(VisionConfiguration.self, forKey: .visionConfiguration)
+        self.modelType = try container.decode(String.self, forKey: .modelType)
+        self.ignoreIndex = (try? container.decode(Int.self, forKey: .ignoreIndex)) ?? -100
+        self.imageTokenIndex = try container.decode(Int.self, forKey: .imageTokenIndex)
+        self.hiddenSize = try container.decode(Int.self, forKey: .hiddenSize)
+        self.padTokenId = try container.decode(Int.self, forKey: .padTokenId)
+
+        // Attempt to decode vocabularySize, fallback to altVocabularySize if missing
+        if let vocab = try container.decodeIfPresent(Int.self, forKey: .vocabularySize) {
+            self.vocabularySize = vocab
+        } else if let altVocab = try container.decodeIfPresent(Int.self, forKey: .altVocabularySize) {
+            self.vocabularySize = altVocab
+        } else {
+            // Default to 257152 if neither key is found
+            self.vocabularySize = 257152
+        }
     }
 }
 
