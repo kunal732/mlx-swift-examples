@@ -119,7 +119,8 @@ private enum Language {
                 if let mask {
                     scores += mask
                 }
-                let attention = scores.softmax(axis: -1)
+                //let attention = scores.softmax(axis: -1)
+                let attention = MLXFast.softmax(scores, axis: -1)
                 let output = attention.dot(values)
                 return wo(output.transposed(0, 2, 1, 3).reshaped(B, L, -1))
             } else {
@@ -833,29 +834,27 @@ public struct PaliGemmaConfiguration: Codable, Sendable {
         case imageTokenIndex = "image_token_index"
         case hiddenSize = "hidden_size"
         case padTokenId = "pad_token_id"
-        case altVocabularySize = "_vocab_size"
     }
 
     public init(from decoder: Swift.Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        self.textConfiguration = try container.decode(TextConfiguration.self, forKey: .textConfiguration)
-        self.visionConfiguration = try container.decode(VisionConfiguration.self, forKey: .visionConfiguration)
-        self.modelType = try container.decode(String.self, forKey: .modelType)
-        self.ignoreIndex = (try? container.decode(Int.self, forKey: .ignoreIndex)) ?? -100
-        self.imageTokenIndex = try container.decode(Int.self, forKey: .imageTokenIndex)
-        self.hiddenSize = try container.decode(Int.self, forKey: .hiddenSize)
-        self.padTokenId = try container.decode(Int.self, forKey: .padTokenId)
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    self.textConfiguration = try container.decode(TextConfiguration.self, forKey: .textConfiguration)
+    self.visionConfiguration = try container.decode(VisionConfiguration.self, forKey: .visionConfiguration)
+    self.modelType = try container.decode(String.self, forKey: .modelType)
+    self.ignoreIndex = (try? container.decode(Int.self, forKey: .ignoreIndex)) ?? -100
+    self.imageTokenIndex = try container.decode(Int.self, forKey: .imageTokenIndex)
+    self.hiddenSize = try container.decode(Int.self, forKey: .hiddenSize)
+    self.padTokenId = try container.decode(Int.self, forKey: .padTokenId)
 
-        // Attempt to decode vocabularySize, fallback to altVocabularySize if missing
-        if let vocab = try container.decodeIfPresent(Int.self, forKey: .vocabularySize) {
-            self.vocabularySize = vocab
-        } else if let altVocab = try container.decodeIfPresent(Int.self, forKey: .altVocabularySize) {
-            self.vocabularySize = altVocab
-        } else {
-            // Default to 257152 if neither key is found
-            self.vocabularySize = 257152
+    // Attempt to decode vocabularySize; fallback if missing
+    if let vocab = try container.decodeIfPresent(Int.self, forKey: .vocabularySize) {
+        self.vocabularySize = vocab
+    } else {
+        // Default to 257152 if not found
+        self.vocabularySize = 257152
         }
     }
+
 }
 
 /// Configuration for ``PaligGemmaProcessor``
